@@ -9,8 +9,23 @@
 static constexpr uint16_t SIGNALING_VPORT_NBO = 0xFFFF;
 static constexpr int VPORT_HEADER_SIZE = 4;
 
+// Current shadPS4 clients (core/net/p2p_codec) frame signaling datagrams as
+// [0xFF][0x80|kind 3][src vport 0xFFFF][dst vport 0xFFFF][payload], not the older four-byte header
+// below. Without this, every STUN ping is dropped and peers are handed port 0. The sender's framing
+// is used for the reply, because each client rejects the other format. The socket is only used on
+// one thread, so the file-level flag is safe.
+static constexpr int CODEC_HEADER_SIZE = 6;
+static const QByteArray kCodecSignalingHeader("\xFF\x83\xFF\xFF\xFF\xFF", CODEC_HEADER_SIZE);
+static bool s_replyWithCodecHeader = false;
+
 static QByteArray FrameSignaling(const QByteArray& payload) {
     QByteArray framed;
+    if (s_replyWithCodecHeader) {
+        framed.reserve(CODEC_HEADER_SIZE + payload.size());
+        framed.append(kCodecSignalingHeader);
+        framed.append(payload);
+        return framed;
+    }
     framed.reserve(VPORT_HEADER_SIZE + payload.size());
     framed.append(reinterpret_cast<const char*>(&SIGNALING_VPORT_NBO), 2);
     framed.append(reinterpret_cast<const char*>(&SIGNALING_VPORT_NBO), 2);
@@ -19,6 +34,9 @@ static QByteArray FrameSignaling(const QByteArray& payload) {
 }
 
 static QByteArray StripVportHeader(const QByteArray& data) {
+    s_replyWithCodecHeader = data.startsWith(kCodecSignalingHeader);
+    if (s_replyWithCodecHeader)
+        return data.mid(CODEC_HEADER_SIZE);
     if (data.size() < VPORT_HEADER_SIZE)
         return {};
     uint16_t src_vp, dst_vp;
